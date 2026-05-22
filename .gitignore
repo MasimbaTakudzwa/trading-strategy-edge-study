@@ -1,0 +1,55 @@
+# Environments and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.tox/
+
+# uv
+.uv/
+uv.lock
+
+# Testing
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Notebooks
+.ipynb_checkpoints/
+notebooks/*.ipynb
+
+# Data dumps and logs (root-level only — not the src/trading_bot/data package)
+/data/
+*.parquet
+*.csv
+!tests/fixtures/*.csv
+logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes (if mounted locally)
+pgdata/
+redisdata/

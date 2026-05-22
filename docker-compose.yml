@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    container_name: tbot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tbot}
+      POSTGRES_USER: ${POSTGRES_USER:-tbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tbot}
+    ports:
+      # External 5433 → container 5432, avoids clash with Homebrew postgres on 5432.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./ops/sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tbot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: tbot-redis
+    restart: unless-stopped
+    ports:
+      # External 6380 → container 6379, avoids clash with local redis.
+      - "6380:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+  redisdata:
