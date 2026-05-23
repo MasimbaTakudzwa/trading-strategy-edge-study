@@ -1,8 +1,17 @@
 """Application config loaded from .env and validated by pydantic.
 
-The OANDA_ENV variable is the single switch between practice and live trading.
-The base URLs are derived from it — strategy and execution code never
-hardcode a URL or a "is this live?" flag.
+CTRADER_ENV is the single switch between the demo and live cTrader hosts.
+Demo/live share the same code path — only the host changes.
+
+Auth model (different from OANDA's single-token approach):
+  1. Register an Open API application at https://openapi.ctrader.com to get
+     CTRADER_CLIENT_ID and CTRADER_CLIENT_SECRET. These identify your app.
+  2. Run the OAuth flow to grant the app access to a specific trading
+     account; that produces an access token (and a refresh token).
+  3. CTRADER_ACCOUNT_ID is the numeric ctidTraderAccountId of the account
+     you authorised (NOT the broker's human-readable account number).
+
+See README "Setup" section for the full registration + OAuth walkthrough.
 """
 
 from __future__ import annotations
@@ -15,23 +24,18 @@ from pydantic import Field, SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class OandaEnv(str, Enum):
-    PRACTICE = "practice"
+class CTraderEnv(str, Enum):
+    DEMO = "demo"
     LIVE = "live"
 
 
-# OANDA's two distinct API endpoints. The free demo account uses the practice
-# endpoint and the same code paths — only the host changes.
-OANDA_HOSTS: dict[OandaEnv, dict[str, str]] = {
-    OandaEnv.PRACTICE: {
-        "rest": "https://api-fxpractice.oanda.com",
-        "stream": "https://stream-fxpractice.oanda.com",
-    },
-    OandaEnv.LIVE: {
-        "rest": "https://api-fxtrade.oanda.com",
-        "stream": "https://stream-fxtrade.oanda.com",
-    },
+# cTrader Open API has two host pairs. The TCP+TLS port is 5035 for both;
+# only the host changes.
+CTRADER_HOSTS: dict[CTraderEnv, str] = {
+    CTraderEnv.DEMO: "demo.ctraderapi.com",
+    CTraderEnv.LIVE: "live.ctraderapi.com",
 }
+CTRADER_PORT = 5035
 
 
 class Settings(BaseSettings):
@@ -42,10 +46,13 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # OANDA
-    oanda_env: OandaEnv = OandaEnv.PRACTICE
-    oanda_account_id: str = "000-000-00000000-000"
-    oanda_api_token: SecretStr = SecretStr("replace-me")
+    # cTrader
+    ctrader_env: CTraderEnv = CTraderEnv.DEMO
+    ctrader_client_id: str = "replace-me"
+    ctrader_client_secret: SecretStr = SecretStr("replace-me")
+    ctrader_account_id: int = 0  # ctidTraderAccountId (numeric)
+    ctrader_access_token: SecretStr = SecretStr("replace-me")
+    ctrader_refresh_token: SecretStr = SecretStr("replace-me")
 
     # Postgres
     postgres_host: str = "localhost"
@@ -73,18 +80,18 @@ class Settings(BaseSettings):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def oanda_rest_url(self) -> str:
-        return OANDA_HOSTS[self.oanda_env]["rest"]
+    def ctrader_host(self) -> str:
+        return CTRADER_HOSTS[self.ctrader_env]
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def oanda_stream_url(self) -> str:
-        return OANDA_HOSTS[self.oanda_env]["stream"]
+    def ctrader_port(self) -> int:
+        return CTRADER_PORT
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def is_live(self) -> bool:
-        return self.oanda_env == OandaEnv.LIVE
+        return self.ctrader_env == CTraderEnv.LIVE
 
     @computed_field  # type: ignore[prop-decorator]
     @property

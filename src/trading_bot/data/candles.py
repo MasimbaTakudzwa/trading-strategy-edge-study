@@ -16,9 +16,9 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from trading_bot.data.ctrader_fetcher import Candle
 from trading_bot.data.db import session_scope
 from trading_bot.data.models import candles
-from trading_bot.data.oanda_fetcher import Candle
 from trading_bot.observability.logging import get_logger
 
 log = get_logger(__name__)

@@ -1,32 +1,36 @@
-"""Smoke tests for config loading and the practice/live switch."""
+"""Smoke tests for config loading and the demo/live switch."""
 
 from __future__ import annotations
 
 import pytest
 
-from trading_bot.config import OANDA_HOSTS, OandaEnv, Settings
+from trading_bot.config import CTRADER_HOSTS, CTraderEnv, Settings
 
 
-def test_defaults_to_practice() -> None:
+def test_defaults_to_demo() -> None:
     s = Settings(_env_file=None)  # type: ignore[call-arg]
-    assert s.oanda_env == OandaEnv.PRACTICE
+    assert s.ctrader_env == CTraderEnv.DEMO
     assert s.is_live is False
-    assert "fxpractice" in s.oanda_rest_url
-    assert "fxpractice" in s.oanda_stream_url
+    assert s.ctrader_host == "demo.ctraderapi.com"
 
 
-def test_live_switch_changes_urls() -> None:
-    s = Settings(_env_file=None, oanda_env=OandaEnv.LIVE)  # type: ignore[call-arg]
+def test_live_switch_changes_host() -> None:
+    s = Settings(_env_file=None, ctrader_env=CTraderEnv.LIVE)  # type: ignore[call-arg]
     assert s.is_live is True
-    assert "fxtrade" in s.oanda_rest_url
-    assert "fxpractice" not in s.oanda_rest_url
+    assert s.ctrader_host == "live.ctraderapi.com"
+
+
+def test_port_is_5035_for_both_envs() -> None:
+    """cTrader uses the same TLS port for demo and live — only the host differs."""
+    for env in CTraderEnv:
+        s = Settings(_env_file=None, ctrader_env=env)  # type: ignore[call-arg]
+        assert s.ctrader_port == 5035
 
 
 def test_hosts_table_covers_all_envs() -> None:
-    for env in OandaEnv:
-        assert env in OANDA_HOSTS
-        assert "rest" in OANDA_HOSTS[env]
-        assert "stream" in OANDA_HOSTS[env]
+    for env in CTraderEnv:
+        assert env in CTRADER_HOSTS
+        assert CTRADER_HOSTS[env].endswith("ctraderapi.com")
 
 
 def test_postgres_dsn_constructed() -> None:

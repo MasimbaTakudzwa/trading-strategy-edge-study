@@ -3,10 +3,12 @@
 Subcommands match the lifecycle phases:
 
   db init             schema migrations
+  db status           show stored candle ranges
   fetch               backfill historical candles into Postgres
+  ctrader symbols     list available instrument names → numeric IDs
   backtest            run a strategy against stored candles
-  paper               run on OANDA practice account (env: OANDA_ENV=practice)
-  live                run on real OANDA account (prompts for confirmation)
+  paper               run on cTrader demo account (env: CTRADER_ENV=demo)
+  live                run on real cTrader account (prompts for confirmation)
   status              current positions, today's P&L
   reconcile           broker positions vs DB — must match
   report              performance summary, sliceable by env
@@ -15,13 +17,13 @@ Subcommands match the lifecycle phases:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 import typer
 from rich.console import Console
 
-from trading_bot.config import OandaEnv, get_settings
+from trading_bot.config import CTraderEnv, get_settings
 from trading_bot.observability.logging import configure_logging, get_logger
 
 app = typer.Typer(
@@ -29,10 +31,12 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
     pretty_exceptions_show_locals=False,
-    help="FX/futures trading bot.",
+    help="FX trading bot (cTrader Open API + FP Markets).",
 )
 db_app = typer.Typer(no_args_is_help=True, help="Database operations.")
+ctrader_app = typer.Typer(no_args_is_help=True, help="cTrader API helpers.")
 app.add_typer(db_app, name="db")
+app.add_typer(ctrader_app, name="ctrader")
 
 console = Console()
 log = get_logger("cli")
@@ -97,14 +101,52 @@ def db_status() -> None:
 
 
 # ---------------------------------------------------------------------------
+# ctrader helpers
+# ---------------------------------------------------------------------------
+
+
+@ctrader_app.command("symbols")
+def ctrader_symbols(
+    filter: Annotated[
+        str, typer.Option(help="Substring filter on symbol name (case-insensitive).")
+    ] = "",
+) -> None:
+    """List instruments available on the connected cTrader account.
+
+    Broker naming varies — some use 'EURUSD', others 'EUR/USD'. Use this
+    to find the exact string to pass to `tbot fetch`.
+    """
+    from rich.table import Table
+
+    from trading_bot.data.ctrader_fetcher import CTraderFetcher
+    from trading_bot.data.ctrader_protocol import CTraderProtocol
+
+    needle = filter.lower()
+    with console.status("Connecting to cTrader and loading symbols..."):
+        with CTraderProtocol.from_settings() as protocol:
+            fetcher = CTraderFetcher(protocol)
+            symbols = fetcher.list_symbols()
+
+    rows = sorted(
+        (name, sid) for name, sid in symbols.items() if needle in name.lower()
+    )
+    table = Table(title=f"cTrader symbols ({len(rows)} of {len(symbols)})")
+    table.add_column("Name", style="cyan")
+    table.add_column("Symbol ID", justify="right", style="magenta")
+    for name, sid in rows:
+        table.add_row(name, str(sid))
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
 # data
 # ---------------------------------------------------------------------------
 
 
 @app.command()
 def fetch(
-    instrument: Annotated[str, typer.Argument(help="e.g. EUR_USD")],
-    granularity: Annotated[str, typer.Argument(help="M1, M5, H1, H4, D")] = "H1",
+    instrument: Annotated[str, typer.Argument(help="e.g. EURUSD (run `tbot ctrader symbols` to find names)")],
+    granularity: Annotated[str, typer.Argument(help="M1, M5, M15, M30, H1, H4, D1, W1")] = "H1",
     since: Annotated[
         str, typer.Option(help="ISO date. Ignored if --resume is set.")
     ] = "2020-01-01",
@@ -112,22 +154,30 @@ def fetch(
         bool,
         typer.Option(
             "--resume",
-            help="Resume from latest stored candle for this series. Falls back to --since if none.",
+            help="Resume from the latest stored candle for this series. Falls back to --since if none.",
         ),
     ] = False,
 ) -> None:
     """Backfill historical candles into Postgres.
 
-    Idempotent: re-runs over the same window won't duplicate rows. With --resume,
-    only fetches data newer than what's already stored.
+    Idempotent: re-runs over the same window won't duplicate rows. With
+    --resume, only fetches bars newer than what's already stored.
     """
     from trading_bot.data.candles import latest_candle_ts
-    from trading_bot.data.oanda_fetcher import GRANULARITY_DELTAS, OandaFetcher
+    from trading_bot.data.ctrader_fetcher import GRANULARITY_MAP, CTraderFetcher
+    from trading_bot.data.ctrader_protocol import CTraderProtocol
+
+    if granularity not in GRANULARITY_MAP:
+        raise typer.Exit(
+            f"Unknown granularity {granularity!r}. "
+            f"Valid: {', '.join(sorted(GRANULARITY_MAP))}"
+        )
 
     if resume:
         latest = latest_candle_ts(instrument, granularity)
         if latest is not None:
-            start = latest + GRANULARITY_DELTAS[granularity]
+            _, minutes = GRANULARITY_MAP[granularity]
+            start = latest + timedelta(minutes=minutes)
             console.print(
                 f"Resuming from latest stored candle: {latest.isoformat()} "
                 f"(next bar {start.isoformat()})"
@@ -138,9 +188,10 @@ def fetch(
     else:
         start = datetime.fromisoformat(since).replace(tzinfo=timezone.utc)
 
-    fetcher = OandaFetcher()
     with console.status(f"Fetching {instrument} {granularity} from {start.isoformat()}..."):
-        n = fetcher.backfill(instrument, granularity, start)
+        with CTraderProtocol.from_settings() as protocol:
+            fetcher = CTraderFetcher(protocol)
+            n = fetcher.backfill(instrument, granularity, start)
     console.print(f"Upserted [bold]{n:,}[/bold] candles for {instrument} {granularity}")
 
 
@@ -152,7 +203,7 @@ def fetch(
 @app.command()
 def backtest(
     strategy: Annotated[str, typer.Option("--strategy", "-s")],
-    instrument: Annotated[str, typer.Option("--instrument", "-i")] = "EUR_USD",
+    instrument: Annotated[str, typer.Option("--instrument", "-i")] = "EURUSD",
     granularity: Annotated[str, typer.Option("--granularity", "-g")] = "H1",
 ) -> None:
     """Run a strategy against stored historical candles."""
@@ -163,16 +214,16 @@ def backtest(
 @app.command()
 def paper(
     strategy: Annotated[str, typer.Option("--strategy", "-s")],
-    instrument: Annotated[str, typer.Option("--instrument", "-i")] = "EUR_USD",
+    instrument: Annotated[str, typer.Option("--instrument", "-i")] = "EURUSD",
 ) -> None:
-    """Run on OANDA practice account. Logs everything to DB tagged env='practice'."""
+    """Run on cTrader demo account. Logs everything to DB tagged env='practice'."""
     s = get_settings()
-    if s.oanda_env != OandaEnv.PRACTICE:
+    if s.ctrader_env != CTraderEnv.DEMO:
         raise typer.Exit(
-            f"OANDA_ENV is '{s.oanda_env.value}' — paper trading requires 'practice'."
+            f"CTRADER_ENV is {s.ctrader_env.value!r} — paper trading requires 'demo'."
         )
     console.print(
-        f"[green]paper trading stub[/green]: {strategy} on {instrument} (env=practice)"
+        f"[green]paper trading stub[/green]: {strategy} on {instrument} (env=demo)"
     )
     log.info("paper_requested", strategy=strategy, instrument=instrument)
 
@@ -180,14 +231,14 @@ def paper(
 @app.command()
 def live(
     strategy: Annotated[str, typer.Option("--strategy", "-s")],
-    instrument: Annotated[str, typer.Option("--instrument", "-i")] = "EUR_USD",
+    instrument: Annotated[str, typer.Option("--instrument", "-i")] = "EURUSD",
     yes: Annotated[bool, typer.Option("--yes", help="Skip confirmation prompt.")] = False,
 ) -> None:
-    """Run on a LIVE OANDA account. Requires explicit confirmation."""
+    """Run on a LIVE cTrader account. Requires explicit confirmation."""
     s = get_settings()
-    if s.oanda_env != OandaEnv.LIVE:
+    if s.ctrader_env != CTraderEnv.LIVE:
         raise typer.Exit(
-            f"OANDA_ENV is '{s.oanda_env.value}' — live trading requires 'live'."
+            f"CTRADER_ENV is {s.ctrader_env.value!r} — live trading requires 'live'."
         )
     if not yes:
         confirm = typer.confirm(
@@ -223,7 +274,7 @@ def report(
     days: Annotated[int, typer.Option(help="lookback window")] = 30,
 ) -> None:
     """Performance summary sliceable by env. Use this to track how the bot
-    does on the practice account over time."""
+    does on the demo account over time."""
     console.print(f"[yellow]report stub[/yellow]: env={env}, last {days}d — wire up in week-2")
 
 
