@@ -67,6 +67,35 @@ def db_init() -> None:
     console.print(f"[green]Schema applied from {sql_path}[/green]")
 
 
+@db_app.command("status")
+def db_status() -> None:
+    """Show stored candle ranges per (instrument, granularity)."""
+    from rich.table import Table
+
+    from trading_bot.data.candles import list_candle_ranges
+
+    ranges = list_candle_ranges()
+    if not ranges:
+        console.print("[yellow]No candles stored yet. Run `tbot fetch` first.[/yellow]")
+        return
+
+    table = Table(title="Stored candles", show_lines=False)
+    table.add_column("Instrument", style="cyan")
+    table.add_column("Granularity", style="magenta")
+    table.add_column("Count", justify="right")
+    table.add_column("Earliest")
+    table.add_column("Latest")
+    for r in ranges:
+        table.add_row(
+            r.instrument,
+            r.granularity,
+            f"{r.count:,}",
+            r.earliest.isoformat() if r.earliest else "-",
+            r.latest.isoformat() if r.latest else "-",
+        )
+    console.print(table)
+
+
 # ---------------------------------------------------------------------------
 # data
 # ---------------------------------------------------------------------------
@@ -76,15 +105,43 @@ def db_init() -> None:
 def fetch(
     instrument: Annotated[str, typer.Argument(help="e.g. EUR_USD")],
     granularity: Annotated[str, typer.Argument(help="M1, M5, H1, H4, D")] = "H1",
-    since: Annotated[str, typer.Option(help="ISO date, e.g. 2020-01-01")] = "2020-01-01",
+    since: Annotated[
+        str, typer.Option(help="ISO date. Ignored if --resume is set.")
+    ] = "2020-01-01",
+    resume: Annotated[
+        bool,
+        typer.Option(
+            "--resume",
+            help="Resume from latest stored candle for this series. Falls back to --since if none.",
+        ),
+    ] = False,
 ) -> None:
-    """Backfill historical candles into Postgres."""
-    from trading_bot.data.oanda_fetcher import OandaFetcher
+    """Backfill historical candles into Postgres.
 
-    start = datetime.fromisoformat(since).replace(tzinfo=timezone.utc)
+    Idempotent: re-runs over the same window won't duplicate rows. With --resume,
+    only fetches data newer than what's already stored.
+    """
+    from trading_bot.data.candles import latest_candle_ts
+    from trading_bot.data.oanda_fetcher import GRANULARITY_DELTAS, OandaFetcher
+
+    if resume:
+        latest = latest_candle_ts(instrument, granularity)
+        if latest is not None:
+            start = latest + GRANULARITY_DELTAS[granularity]
+            console.print(
+                f"Resuming from latest stored candle: {latest.isoformat()} "
+                f"(next bar {start.isoformat()})"
+            )
+        else:
+            start = datetime.fromisoformat(since).replace(tzinfo=timezone.utc)
+            console.print(f"No prior data, starting from {start.isoformat()}")
+    else:
+        start = datetime.fromisoformat(since).replace(tzinfo=timezone.utc)
+
     fetcher = OandaFetcher()
-    n = fetcher.backfill(instrument, granularity, start)
-    console.print(f"Fetched [bold]{n}[/bold] candles for {instrument} {granularity}")
+    with console.status(f"Fetching {instrument} {granularity} from {start.isoformat()}..."):
+        n = fetcher.backfill(instrument, granularity, start)
+    console.print(f"Upserted [bold]{n:,}[/bold] candles for {instrument} {granularity}")
 
 
 # ---------------------------------------------------------------------------
