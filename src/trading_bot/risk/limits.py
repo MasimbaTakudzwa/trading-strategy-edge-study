@@ -36,13 +36,15 @@ class RiskCheck:
 class Intent:
     """Strategy output — what the strategy *wants* to do.
 
-    The risk gate converts this into a sized OrderRequest, or rejects it.
-    Units are computed here, not in the strategy.
+    The strategy supplies direction and instrument only. Stop placement and
+    sizing are the OMS/risk-gate's job (ATR-derived), so stop_loss_price is
+    optional — set it to pin an explicit stop, leave None to let the OMS
+    compute one from volatility.
     """
 
     instrument: str
     side: Side
-    stop_loss_price: float
+    stop_loss_price: float | None = None
     take_profit_price: float | None = None
     metadata: dict | None = None
 

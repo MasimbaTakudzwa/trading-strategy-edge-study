@@ -82,6 +82,10 @@ class Broker(Protocol):
 
     def get_account(self) -> AccountSnapshot: ...
 
+    def close_position(self, instrument: str) -> int:
+        """Close all open positions for one instrument. Returns count closed."""
+        ...
+
     def close_all_positions(self) -> int:
         """Kill switch. Returns the number of positions closed."""
         ...

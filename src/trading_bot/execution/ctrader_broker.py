@@ -176,6 +176,26 @@ class CTraderBroker:
     def cancel_order(self, broker_order_id: str) -> bool:
         raise NotImplementedError("Order cancellation wired in alongside limit orders (later).")
 
+    def close_position(self, instrument: str) -> int:
+        """Close all open positions for one instrument. Risk-reducing, so not
+        gated. Returns the number closed."""
+        sid = self._symbol_id(instrument)
+        res = self._protocol.send(ProtoOAReconcileReq(ctidTraderAccountId=self._account_id))
+        closed = 0
+        for p in res.position:
+            if (
+                p.positionStatus == ProtoOAPositionStatus.POSITION_STATUS_OPEN
+                and p.tradeData.symbolId == sid
+            ):
+                close = ProtoOAClosePositionReq()
+                close.ctidTraderAccountId = self._account_id
+                close.positionId = p.positionId
+                close.volume = p.tradeData.volume
+                self._protocol.send(close)
+                closed += 1
+        log.info("close_position", instrument=instrument, closed=closed)
+        return closed
+
     def close_all_positions(self) -> int:
         """Kill switch — flatten everything. Risk-reducing, so intentionally
         NOT gated by _guard(): we must always be able to flatten."""
