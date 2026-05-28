@@ -15,6 +15,7 @@ from enum import Enum
 from trading_bot.config import get_settings
 from trading_bot.execution.base import OrderRequest, Side
 from trading_bot.observability.logging import get_logger
+from trading_bot.risk.sizing import atr_stop_distance, volatility_position_size
 
 log = get_logger(__name__)
 
@@ -63,17 +64,39 @@ class RiskGate:
         entry_price: float,
         pip_value: float,
     ) -> float:
-        """Volatility-targeted sizing: risk a fixed % of equity per trade.
+        """Size from an explicit stop price: risk a fixed % of equity per trade.
 
-        units = (equity × risk_pct) / (stop_distance × pip_value)
-
-        TODO(week-3): full pip-value lookup per instrument, contract-size aware.
+        Stop distance is the gap between entry and the intent's stop-loss.
         """
-        risk_amount = account_equity * self.max_account_risk_pct
         stop_distance = abs(entry_price - intent.stop_loss_price)
-        if stop_distance <= 0:
-            raise ValueError("Stop-loss must differ from entry price")
-        return risk_amount / (stop_distance * pip_value)
+        return volatility_position_size(
+            equity=account_equity,
+            risk_fraction=self.max_account_risk_pct,
+            stop_distance=stop_distance,
+            value_per_point=pip_value,
+        )
+
+    def size_from_atr(
+        self,
+        account_equity: float,
+        atr_value: float,
+        atr_multiple: float = 2.0,
+        value_per_point: float = 1.0,
+    ) -> tuple[float, float]:
+        """Volatility-targeted sizing from ATR. Returns (units, stop_distance).
+
+        The stop distance is ATR × multiple, so size adapts to each market's
+        volatility while keeping money-at-risk constant. The caller turns
+        stop_distance into a concrete stop price (entry ∓ stop_distance).
+        """
+        stop_distance = atr_stop_distance(atr_value, atr_multiple)
+        units = volatility_position_size(
+            equity=account_equity,
+            risk_fraction=self.max_account_risk_pct,
+            stop_distance=stop_distance,
+            value_per_point=value_per_point,
+        )
+        return units, stop_distance
 
     def check(
         self,
