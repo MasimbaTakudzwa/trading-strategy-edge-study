@@ -123,6 +123,7 @@ class PaperEngine:
         atr_period: int = 14,
         min_candles: int | None = None,
         leverage: float = 1.0,
+        value_per_point: float = 1.0,
     ) -> None:
         self._broker = broker
         self._oms = oms
@@ -136,6 +137,8 @@ class PaperEngine:
         # Enough bars for a defined ATR; strategies self-guard via NaN→no-signal.
         self._min_candles = min_candles if min_candles is not None else atr_period + 2
         self._leverage = leverage
+        # Used only to compute realized P&L when settling a closed trade.
+        self._value_per_point = value_per_point
         self._day: date | None = None
         self._day_start_equity: float | None = None
 
@@ -164,6 +167,15 @@ class PaperEngine:
 
         if decision is _Decision.CLOSE:
             closed = self._oms.close_position(self._instrument)
+            # Settle the DB trade(s). Exit price is the bar close (the broker
+            # close doesn't return a fill), so realized P&L is approximate.
+            self._store.close_open_trades(
+                run_id=self._run_id,
+                instrument=self._instrument,
+                exit_price=float(candles["close"].iloc[-1]),
+                exit_time=last_ts,
+                value_per_point=self._value_per_point,
+            )
             self._store.record_event(
                 run_id=self._run_id,
                 env=self._env,
@@ -222,12 +234,26 @@ class PaperEngine:
             leverage=self._leverage,
         )
         if res.placed and res.order_request is not None:
-            self._store.record_order(
+            order_id = self._store.record_order(
                 run_id=self._run_id,
                 env=self._env,
                 request=res.order_request,
                 result=res.order_result,
             )
+            # order_id is None on a re-processed bar (ON CONFLICT) — only open a
+            # trade for a genuinely new order, so restarts can't double-count.
+            if order_id is not None:
+                fill = res.order_result.filled_price if res.order_result else None
+                self._store.record_trade(
+                    run_id=self._run_id,
+                    env=self._env,
+                    instrument=self._instrument,
+                    side=side.value,
+                    units=res.order_request.units,
+                    entry_price=fill if fill else entry_price,
+                    entry_time=last_ts,
+                    entry_order_id=order_id,
+                )
         log.info(
             "paper_open",
             instrument=self._instrument,

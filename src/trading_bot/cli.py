@@ -501,6 +501,7 @@ def paper(
             store=store,
             run_id=run_id,
             env="practice",
+            value_per_point=value_per_point,
         )
 
         _, minutes = GRANULARITY_MAP[granularity]
@@ -604,15 +605,76 @@ def safety() -> None:
 
 
 @app.command()
-def status() -> None:
-    """Show open positions and today's P&L."""
-    console.print("[yellow]status stub[/yellow]: wire up in week-4")
+def status(
+    env: Annotated[str, typer.Option(help="practice | live | backtest")] = "practice",
+) -> None:
+    """Show what the bot last recorded: equity, today's P&L, open positions.
+
+    Reads the DB only (no broker call) — for a broker-vs-DB truth check use
+    `tbot reconcile`.
+    """
+    from rich.table import Table
+
+    from trading_bot.oms.reporting import latest_account_state, open_positions, todays_pnl_pct
+
+    state = latest_account_state(env)
+    positions = open_positions(env)
+    pnl = todays_pnl_pct(env)
+
+    if state is None:
+        console.print(f"[yellow]No recorded activity for env={env!r} yet.[/yellow]")
+        return
+
+    console.print(
+        f"[bold]{env}[/bold]  balance={state.balance:,.2f}  equity={state.equity:,.2f}  "
+        f"today P&L={'n/a' if pnl is None else f'{pnl:+.2%}'}  "
+        f"(as of {state.ts.isoformat() if state.ts else '-'})"
+    )
+    if not positions:
+        console.print("[green]Flat[/green] — no open positions on record.")
+        return
+    table = Table(title="Open positions (DB record)")
+    table.add_column("Instrument", style="cyan")
+    table.add_column("Units", justify="right")
+    for inst, units in sorted(positions.items()):
+        table.add_row(inst, f"{units:+g}")
+    console.print(table)
 
 
 @app.command()
-def reconcile() -> None:
-    """Compare broker positions to DB. Must match."""
-    console.print("[yellow]reconcile stub[/yellow]: wire up in week-4")
+def reconcile(
+    env: Annotated[str, typer.Option(help="practice | live | backtest")] = "practice",
+) -> None:
+    """Compare broker positions to the DB record. They must match."""
+    from trading_bot.data.ctrader_protocol import CTraderProtocol
+    from trading_bot.execution.ctrader_broker import CTraderBroker
+    from trading_bot.oms.reconcile import reconcile_positions
+    from trading_bot.oms.reporting import open_positions
+
+    db_positions = open_positions(env)
+    with (
+        console.status("Fetching broker positions..."),
+        CTraderProtocol.from_settings() as protocol,
+    ):
+        broker = CTraderBroker(protocol)
+        broker_positions = {p.instrument: p.units for p in broker.get_positions()}
+
+    result = reconcile_positions(broker_positions, db_positions)
+    if result.is_clean:
+        console.print(
+            f"[green]Clean[/green] — broker and DB agree "
+            f"({len(result.matched)} matched position(s))."
+        )
+        return
+
+    console.print("[red]MISMATCH[/red] — broker and DB disagree:")
+    for d in result.only_broker:
+        console.print(f"  broker-only: {d.instrument} broker={d.broker_units:+g} db={d.db_units:+g}")
+    for d in result.only_db:
+        console.print(f"  db-only:     {d.instrument} broker={d.broker_units:+g} db={d.db_units:+g}")
+    for d in result.mismatched:
+        console.print(f"  size diff:   {d.instrument} broker={d.broker_units:+g} db={d.db_units:+g}")
+    raise typer.Exit(code=1)
 
 
 @app.command()
@@ -620,9 +682,34 @@ def report(
     env: Annotated[str, typer.Option(help="practice | live | backtest")] = "practice",
     days: Annotated[int, typer.Option(help="lookback window")] = 30,
 ) -> None:
-    """Performance summary sliceable by env. Use this to track how the bot
-    does on the demo account over time."""
-    console.print(f"[yellow]report stub[/yellow]: env={env}, last {days}d — wire up in week-2")
+    """Performance summary sliceable by env — track how the bot does over time."""
+    from rich.table import Table
+
+    from trading_bot.oms.reporting import performance
+
+    s = performance(env=env, days=days)
+    if s.total == 0:
+        console.print(f"[yellow]No trades for env={env!r} in the last {days}d.[/yellow]")
+        return
+
+    if s.profit_factor is not None:
+        pf = f"{s.profit_factor:.2f}"
+    elif s.gross_profit > 0:
+        pf = "inf"  # wins, no losses
+    else:
+        pf = "-"
+
+    table = Table(title=f"Performance — {env}, last {days}d")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right")
+    table.add_row("Trades (closed/open)", f"{s.closed}/{s.open_trades}")
+    table.add_row("Win rate", f"{s.win_rate:.1%}" if s.closed else "-")
+    table.add_row("Wins / losses", f"{s.wins} / {s.losses}")
+    table.add_row("Net P&L", f"{s.net_pnl:,.2f}")
+    table.add_row("Gross profit / loss", f"{s.gross_profit:,.2f} / {s.gross_loss:,.2f}")
+    table.add_row("Profit factor", pf)
+    table.add_row("Avg win / loss", f"{s.avg_win:,.2f} / {s.avg_loss:,.2f}")
+    console.print(table)
 
 
 if __name__ == "__main__":

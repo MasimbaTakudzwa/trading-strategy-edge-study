@@ -64,12 +64,16 @@ class FakeBroker:
 
 
 class FakeStore:
-    def __init__(self) -> None:
+    def __init__(self, *, order_id: int | None = 1) -> None:
         self.runs: list[dict] = []
         self.orders: list[dict] = []
         self.snapshots: list[dict] = []
         self.events: list[dict] = []
+        self.trades_opened: list[dict] = []
+        self.trades_closed: list[dict] = []
         self.ended: list[str] = []
+        # What record_order returns: an int (new order) or None (ON CONFLICT).
+        self._order_id = order_id
 
     def start_run(self, **kw: Any) -> str:
         self.runs.append(kw)
@@ -78,8 +82,17 @@ class FakeStore:
     def end_run(self, run_id: str) -> None:
         self.ended.append(run_id)
 
-    def record_order(self, **kw: Any) -> None:
+    def record_order(self, **kw: Any) -> int | None:
         self.orders.append(kw)
+        return self._order_id
+
+    def record_trade(self, **kw: Any) -> int:
+        self.trades_opened.append(kw)
+        return len(self.trades_opened)
+
+    def close_open_trades(self, **kw: Any) -> int:
+        self.trades_closed.append(kw)
+        return 1
 
     def record_snapshot(self, **kw: Any) -> None:
         self.snapshots.append(kw)
@@ -205,6 +218,8 @@ def test_flat_plus_entry_signal_opens_sizes_and_persists() -> None:
     assert order.stop_loss_price < 1.10  # long stop sits below entry
     assert len(store.orders) == 1
     assert len(store.snapshots) == 1  # heartbeat recorded
+    assert len(store.trades_opened) == 1  # a trade was opened
+    assert store.trades_opened[0]["entry_order_id"] == 1  # linked to the order
 
 
 def test_in_long_plus_exit_signal_closes() -> None:
@@ -220,6 +235,8 @@ def test_in_long_plus_exit_signal_closes() -> None:
     assert broker.closed == ["EURUSD"]
     assert broker.placed == []  # no new order
     assert any(e["category"] == "position_closed" for e in store.events)
+    assert len(store.trades_closed) == 1  # the DB trade was settled
+    assert store.trades_closed[0]["exit_price"] == 1.10  # bar close
 
 
 def test_flat_no_signal_holds_but_still_snapshots() -> None:
@@ -267,6 +284,22 @@ def test_entry_blocked_by_kill_switch_is_not_placed_or_recorded() -> None:
     assert broker.placed == []
     assert store.orders == []  # only placed orders are recorded
     assert len(store.snapshots) == 1  # heartbeat still recorded
+
+
+def test_reprocessed_bar_records_order_but_not_a_duplicate_trade() -> None:
+    # record_order returns None → the order already existed (ON CONFLICT), so
+    # the engine must NOT open a second trade for the same bar.
+    broker = FakeBroker(equity=1000.0)
+    store = FakeStore(order_id=None)
+    candles = _candles()
+    engine = _engine(broker, FakeStrategy(_sig(candles.index, long_entry=True)), store)
+
+    result = engine.run_tick(candles)
+
+    assert result.action is Action.OPEN
+    assert result.oms_result is not None and result.oms_result.placed
+    assert len(store.orders) == 1  # record_order still called (idempotent insert)
+    assert store.trades_opened == []  # but no duplicate trade
 
 
 # -- loop scheduler ----------------------------------------------------------
