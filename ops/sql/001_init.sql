@@ -106,7 +106,9 @@ CREATE TABLE IF NOT EXISTS account_snapshots (
     open_positions  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS snapshots_run_ts_idx ON account_snapshots (run_id, ts DESC);
-SELECT create_hypertable('account_snapshots', 'ts', if_not_exists => TRUE);
+-- Not a hypertable: low write volume (~1 row / 30s) and a surrogate id PK that
+-- doesn't include the ts partitioning column. A plain indexed table is plenty
+-- here. Only candles (high-frequency) needs hypertable partitioning.
 
 -- ---------------------------------------------------------------------------
 -- events: bot lifecycle, errors, alerts — append-only audit log
