@@ -105,6 +105,57 @@ def db_status() -> None:
 # ---------------------------------------------------------------------------
 
 
+@ctrader_app.command("login")
+def ctrader_login(
+    timeout: Annotated[
+        int, typer.Option(help="Seconds to wait for browser authorisation.")
+    ] = 300,
+) -> None:
+    """Run the OAuth flow and print the .env values to paste.
+
+    Opens your browser to authorise the app against your cTrader account,
+    catches the redirect locally, exchanges it for tokens, and discovers
+    your account IDs. Requires CTRADER_CLIENT_ID + CTRADER_CLIENT_SECRET
+    already set in .env.
+    """
+    from trading_bot.data.ctrader_auth import REDIRECT_URI, run_login
+
+    console.print(
+        f"Opening your browser to authorise. Redirect target: [cyan]{REDIRECT_URI}[/cyan]\n"
+        f"(Make sure this exact URL is registered on your Open API app.)"
+    )
+    try:
+        result = run_login(timeout=float(timeout))
+    except Exception as e:  # noqa: BLE001 — surface any failure cleanly to the user
+        console.print(f"[red]Login failed:[/red] {e}")
+        raise typer.Exit(code=1) from e
+
+    demos = result.demo_accounts
+    console.print("\n[green]Authorised.[/green] Accounts on this token:")
+    for acc in result.accounts:
+        kind = "[red]LIVE[/red]" if acc.is_live else "[green]demo[/green]"
+        console.print(f"  {kind}  ctidTraderAccountId=[bold]{acc.ctid_trader_account_id}[/bold]  login={acc.trader_login}")
+
+    if len(demos) == 1:
+        chosen = demos[0].ctid_trader_account_id
+        note = "(your only demo account — use this)"
+    elif len(demos) > 1:
+        chosen = demos[0].ctid_trader_account_id
+        note = "(first of several demos — pick the one matching account 5826141 etc.)"
+    else:
+        chosen = result.accounts[0].ctid_trader_account_id if result.accounts else 0
+        note = "[yellow](no demo account found — double-check you authorised the demo)[/yellow]"
+
+    console.print(f"\nPaste these into [cyan].env[/cyan] {note}:\n")
+    console.print(f"[bold]CTRADER_ACCOUNT_ID[/bold]={chosen}")
+    console.print(f"[bold]CTRADER_ACCESS_TOKEN[/bold]={result.access_token}")
+    console.print(f"[bold]CTRADER_REFRESH_TOKEN[/bold]={result.refresh_token}")
+    console.print(
+        f"\nAccess token valid ~{result.expires_in // 86400} days. "
+        f"Re-run [cyan]tbot ctrader login[/cyan] to refresh."
+    )
+
+
 @ctrader_app.command("symbols")
 def ctrader_symbols(
     filter: Annotated[

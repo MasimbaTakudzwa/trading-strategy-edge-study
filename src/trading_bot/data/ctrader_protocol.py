@@ -116,7 +116,8 @@ class CTraderProtocol:
         self._account_id = account_id
         self._access_token = access_token
         self._client: Client | None = None
-        self._authenticated = False
+        self._app_authed = False
+        self._account_authed = False
 
     @classmethod
     def from_settings(cls) -> "CTraderProtocol":
@@ -138,25 +139,39 @@ class CTraderProtocol:
 
     @property
     def is_authenticated(self) -> bool:
-        return self._authenticated
+        return self._account_authed
+
+    def _ensure_app_authed(self, timeout: float) -> None:
+        """Open the TLS connection and authenticate the application. Idempotent."""
+        if self._client is None:
+            self._client = Client(self._host, self._port, TcpProtocol)
+            log.info("ctrader_connecting", host=self._host, port=self._port)
+            evt = _start_and_connect(self._client)
+            evt.wait(timeout)
+            log.info("ctrader_connected")
+
+        if not self._app_authed:
+            app_req = ProtoOAApplicationAuthReq()
+            app_req.clientId = self._client_id
+            app_req.clientSecret = self._client_secret
+            _check_for_error(_send_in_reactor(self._client, app_req))
+            self._app_authed = True
+            log.info("ctrader_app_authenticated")
+
+    def connect_app_only(self, timeout: float = DEFAULT_CONNECT_TIMEOUT) -> None:
+        """Connect + app auth, WITHOUT account auth.
+
+        Used by the OAuth login flow: GetAccountListByAccessToken needs app
+        auth but runs *before* we know which account to authenticate.
+        """
+        self._ensure_app_authed(timeout)
 
     def connect(self, timeout: float = DEFAULT_CONNECT_TIMEOUT) -> None:
         """Connect, authenticate the app, then the account. Blocks until ready."""
-        if self._authenticated:
+        if self._account_authed:
             return
 
-        self._client = Client(self._host, self._port, TcpProtocol)
-
-        log.info("ctrader_connecting", host=self._host, port=self._port)
-        evt = _start_and_connect(self._client)
-        evt.wait(timeout)
-        log.info("ctrader_connected")
-
-        app_req = ProtoOAApplicationAuthReq()
-        app_req.clientId = self._client_id
-        app_req.clientSecret = self._client_secret
-        _check_for_error(_send_in_reactor(self._client, app_req))
-        log.info("ctrader_app_authenticated")
+        self._ensure_app_authed(timeout)
 
         acc_req = ProtoOAAccountAuthReq()
         acc_req.ctidTraderAccountId = self._account_id
@@ -164,19 +179,24 @@ class CTraderProtocol:
         _check_for_error(_send_in_reactor(self._client, acc_req))
         log.info("ctrader_account_authenticated", account_id=self._account_id)
 
-        self._authenticated = True
+        self._account_authed = True
 
     def send(self, message: Any) -> Any:
-        """Send a request and return the (unwrapped) response. Raises on error."""
-        if self._client is None or not self._authenticated:
-            raise RuntimeError("Call connect() before send()")
+        """Send a request and return the (unwrapped) response. Raises on error.
+
+        Requires at least app auth (connect_app_only or connect). Account-scoped
+        requests will still fail server-side if the account isn't authenticated.
+        """
+        if self._client is None or not self._app_authed:
+            raise RuntimeError("Call connect() or connect_app_only() before send()")
         return _check_for_error(_send_in_reactor(self._client, message))
 
     def close(self) -> None:
         if self._client is not None:
             _stop_in_reactor(self._client)
             self._client = None
-            self._authenticated = False
+            self._app_authed = False
+            self._account_authed = False
             log.info("ctrader_closed")
 
     def __enter__(self) -> "CTraderProtocol":
