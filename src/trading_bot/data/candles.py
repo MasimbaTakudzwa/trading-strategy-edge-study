@@ -12,6 +12,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
+import pandas as pd
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
@@ -118,6 +119,54 @@ def list_candle_ranges() -> list[CandleRange]:
             )
             for row in result
         ]
+
+
+_OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
+
+
+def load_candles(
+    instrument: str,
+    granularity: str,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> pd.DataFrame:
+    """Load stored candles into a time-indexed OHLCV DataFrame.
+
+    Index is the (tz-aware, UTC) candle timestamp; columns are
+    open/high/low/close (float) and volume (int). Sorted ascending by time,
+    which is what vectorbt and the strategy signal logic expect.
+    """
+    stmt = (
+        select(
+            candles.c.ts,
+            candles.c.open,
+            candles.c.high,
+            candles.c.low,
+            candles.c.close,
+            candles.c.volume,
+        )
+        .where(candles.c.instrument == instrument)
+        .where(candles.c.granularity == granularity)
+        .order_by(candles.c.ts)
+    )
+    if start is not None:
+        stmt = stmt.where(candles.c.ts >= start)
+    if end is not None:
+        stmt = stmt.where(candles.c.ts < end)
+
+    with session_scope() as session:
+        rows = session.execute(stmt).all()
+
+    if not rows:
+        empty_index = pd.DatetimeIndex([], name="ts", tz="UTC")
+        return pd.DataFrame(columns=_OHLCV_COLUMNS, index=empty_index)
+
+    df = pd.DataFrame(rows, columns=["ts", *_OHLCV_COLUMNS]).set_index("ts")
+    # DB returns Decimal for NUMERIC columns; vectorbt/numpy want float.
+    for col in ("open", "high", "low", "close"):
+        df[col] = df[col].astype(float)
+    df["volume"] = df["volume"].fillna(0).astype("int64")
+    return df
 
 
 def latest_candle_ts(instrument: str, granularity: str) -> datetime | None:

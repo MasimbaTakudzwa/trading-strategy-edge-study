@@ -253,13 +253,76 @@ def fetch(
 
 @app.command()
 def backtest(
-    strategy: Annotated[str, typer.Option("--strategy", "-s")],
+    strategy: Annotated[str, typer.Option("--strategy", "-s")] = "donchian",
     instrument: Annotated[str, typer.Option("--instrument", "-i")] = "EURUSD",
     granularity: Annotated[str, typer.Option("--granularity", "-g")] = "H1",
+    capital: Annotated[float, typer.Option(help="Starting cash.")] = 1000.0,
+    entry_period: Annotated[int, typer.Option(help="Donchian entry channel length.")] = 20,
+    exit_period: Annotated[int, typer.Option(help="Donchian exit channel length.")] = 10,
+    fees: Annotated[float, typer.Option(help="Commission fraction per side.")] = 0.00003,
+    slippage: Annotated[float, typer.Option(help="Slippage fraction per side.")] = 0.00002,
 ) -> None:
     """Run a strategy against stored historical candles."""
-    console.print(f"[yellow]backtest stub[/yellow]: {strategy} on {instrument} {granularity}")
-    log.info("backtest_requested", strategy=strategy, instrument=instrument)
+    from rich.table import Table
+
+    from trading_bot.backtest.runner import run_backtest
+    from trading_bot.data.candles import load_candles
+    from trading_bot.strategies.donchian import DonchianParams, DonchianStrategy
+
+    if strategy != "donchian":
+        raise typer.Exit(f"Unknown strategy {strategy!r}. Available: donchian")
+
+    df = load_candles(instrument, granularity)
+    if df.empty:
+        raise typer.Exit(
+            f"No stored candles for {instrument} {granularity}. "
+            f"Run `tbot fetch {instrument} {granularity}` first."
+        )
+
+    console.print(
+        f"Backtesting [bold]{strategy}[/bold] on {instrument} {granularity}: "
+        f"{len(df):,} bars, {df.index[0].date()} → {df.index[-1].date()}, "
+        f"entry={entry_period}/exit={exit_period}, capital={capital:,.0f}"
+    )
+
+    strat = DonchianStrategy(DonchianParams(entry_period=entry_period, exit_period=exit_period))
+    result = run_backtest(
+        df,
+        strat,
+        init_cash=capital,
+        fees=fees,
+        slippage=slippage,
+        granularity=granularity,
+    )
+
+    # Pull the headline metrics from vectorbt's stats Series.
+    s = result.stats
+    table = Table(title=f"{strategy} backtest — {instrument} {granularity}")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right")
+
+    def _row(label: str, key: str, fmt: str = "{}") -> None:
+        if key in s.index:
+            table.add_row(label, fmt.format(s[key]))
+
+    _row("Total return", "Total Return [%]", "{:.2f}%")
+    _row("Benchmark (buy & hold)", "Benchmark Return [%]", "{:.2f}%")
+    _row("Max drawdown", "Max Drawdown [%]", "{:.2f}%")
+    _row("Sharpe ratio", "Sharpe Ratio", "{:.2f}")
+    _row("Sortino ratio", "Sortino Ratio", "{:.2f}")
+    _row("Win rate", "Win Rate [%]", "{:.1f}%")
+    _row("Total trades", "Total Trades", "{:.0f}")
+    _row("Profit factor", "Profit Factor", "{:.2f}")
+    _row("Final value", "End Value", "{:,.2f}")
+    console.print(table)
+
+    log.info(
+        "backtest_requested",
+        strategy=strategy,
+        instrument=instrument,
+        granularity=granularity,
+        bars=len(df),
+    )
 
 
 @app.command()
