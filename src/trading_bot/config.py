@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     max_open_positions: int = Field(5, ge=1, le=50)
     max_leverage: float = Field(5.0, ge=1.0, le=50.0)
 
+    # Safety — the explicit second key for live trading. Even with
+    # CTRADER_ENV=live, no order is placed unless this is True. Keep it
+    # False until the strategy is verified on the demo account.
+    allow_live_trading: bool = False
+
     # Alerts
     slack_webhook_url: str = ""
 

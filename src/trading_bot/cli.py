@@ -286,11 +286,19 @@ def live(
     yes: Annotated[bool, typer.Option("--yes", help="Skip confirmation prompt.")] = False,
 ) -> None:
     """Run on a LIVE cTrader account. Requires explicit confirmation."""
+    from trading_bot.risk.safety import LiveTradingBlocked, assert_can_trade
+
     s = get_settings()
     if s.ctrader_env != CTraderEnv.LIVE:
         raise typer.Exit(
             f"CTRADER_ENV is {s.ctrader_env.value!r} — live trading requires 'live'."
         )
+    # Safety gate — refuses unless ALLOW_LIVE_TRADING=true (and account matches).
+    try:
+        assert_can_trade(s)
+    except LiveTradingBlocked as e:
+        console.print(f"[red]Blocked:[/red] {e}")
+        raise typer.Exit(code=1) from e
     if not yes:
         confirm = typer.confirm(
             f"About to trade LIVE money: {strategy} on {instrument}. Continue?",
@@ -305,6 +313,39 @@ def live(
 # ---------------------------------------------------------------------------
 # observability
 # ---------------------------------------------------------------------------
+
+
+@app.command()
+def safety() -> None:
+    """Show the current trading-safety posture — can the bot place live orders?"""
+    from rich.table import Table
+
+    from trading_bot.risk.safety import safety_posture
+
+    posture = safety_posture(get_settings())
+    table = Table(title="Trading safety posture")
+    table.add_column("Check", style="cyan")
+    table.add_column("Value")
+    table.add_row("Environment", str(posture["env"]))
+    table.add_row("Host", str(posture["host"]))
+    table.add_row("Account ID", str(posture["account_id"]))
+    table.add_row("ALLOW_LIVE_TRADING", str(posture["allow_live_trading"]))
+
+    live_possible = posture["live_orders_possible"]
+    verdict = (
+        "[red]YES — live orders CAN be placed[/red]"
+        if live_possible
+        else "[green]NO — live orders are blocked[/green]"
+    )
+    table.add_row("Live orders possible?", verdict)
+    console.print(table)
+
+    if not live_possible:
+        console.print(
+            "\n[green]Safe.[/green] The bot cannot place live orders in this "
+            "configuration. To enable live trading you must BOTH set "
+            "CTRADER_ENV=live AND ALLOW_LIVE_TRADING=true."
+        )
 
 
 @app.command()
