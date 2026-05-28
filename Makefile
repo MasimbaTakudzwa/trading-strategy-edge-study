@@ -22,6 +22,9 @@ install:
 	uv sync --extra dev --extra backtest
 
 up:
+	@docker info >/dev/null 2>&1 || { echo "Docker not running. Launching Docker Desktop..."; open -a Docker; }
+	@echo "Waiting for Docker daemon (up to 120s)..."
+	@n=0; until docker info >/dev/null 2>&1; do n=$$((n+1)); if [ $$n -gt 120 ]; then echo "Docker daemon never came up. Is Docker Desktop installed?"; exit 1; fi; sleep 1; done
 	docker compose up -d
 	@echo "Waiting for Postgres..."
 	@until docker compose exec -T postgres pg_isready -U $${POSTGRES_USER:-tbot} >/dev/null 2>&1; do sleep 1; done
