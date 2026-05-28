@@ -20,7 +20,7 @@ import pandas as pd
 import vectorbt as vbt
 
 from trading_bot.observability.logging import get_logger
-from trading_bot.strategies.donchian import DonchianStrategy
+from trading_bot.strategies.base import SignalStrategy
 
 log = get_logger(__name__)
 
@@ -61,16 +61,19 @@ def freq_for(granularity: str) -> str:
 
 def run_backtest(
     candles: pd.DataFrame,
-    strategy: DonchianStrategy,
+    strategy: SignalStrategy,
     *,
     init_cash: float = 1000.0,
     fees: float = DEFAULT_FEES,
     slippage: float = DEFAULT_SLIPPAGE,
     granularity: str = "H1",
+    stop_loss: float | None = None,
 ) -> BacktestResult:
     """Run `strategy` over `candles` and return stats + the portfolio.
 
     `candles` is a time-indexed OHLCV frame (see data.candles.load_candles).
+    `stop_loss` is a fractional hard stop (e.g. 0.02 = 2%); strongly advised
+    for mean-reversion, whose failure mode is a non-reverting trend.
     """
     if candles.empty:
         raise ValueError("No candles to backtest — fetch data first.")
@@ -86,6 +89,7 @@ def run_backtest(
         init_cash=init_cash,
         fees=fees,
         slippage=slippage,
+        sl_stop=stop_loss,
         freq=freq_for(granularity),
     )
 
@@ -96,5 +100,6 @@ def run_backtest(
         init_cash=init_cash,
         fees=fees,
         slippage=slippage,
+        stop_loss=stop_loss,
     )
     return BacktestResult(stats=pf.stats(), portfolio=pf)

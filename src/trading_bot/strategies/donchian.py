@@ -23,6 +23,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from trading_bot.strategies.base import SignalSet
+
 
 @dataclass(frozen=True)
 class DonchianParams:
@@ -44,16 +46,6 @@ class DonchianParams:
             raise ValueError("exit_period should be smaller than entry_period")
         if self.trend_filter_period is not None and self.trend_filter_period < 2:
             raise ValueError("trend_filter_period must be >= 2 or None")
-
-
-@dataclass(frozen=True)
-class SignalSet:
-    """Boolean signal Series aligned to the candle index, for vectorbt."""
-
-    long_entries: pd.Series
-    long_exits: pd.Series
-    short_entries: pd.Series
-    short_exits: pd.Series
 
 
 class DonchianStrategy:

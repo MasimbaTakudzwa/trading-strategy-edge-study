@@ -253,15 +253,20 @@ def fetch(
 
 @app.command()
 def backtest(
-    strategy: Annotated[str, typer.Option("--strategy", "-s")] = "donchian",
+    strategy: Annotated[str, typer.Option("--strategy", "-s", help="donchian | meanrev")] = "donchian",
     instrument: Annotated[str, typer.Option("--instrument", "-i")] = "EURUSD",
     granularity: Annotated[str, typer.Option("--granularity", "-g")] = "H1",
     capital: Annotated[float, typer.Option(help="Starting cash.")] = 1000.0,
-    entry_period: Annotated[int, typer.Option(help="Donchian entry channel length.")] = 20,
-    exit_period: Annotated[int, typer.Option(help="Donchian exit channel length.")] = 10,
+    entry_period: Annotated[int, typer.Option(help="[donchian] entry channel length.")] = 20,
+    exit_period: Annotated[int, typer.Option(help="[donchian] exit channel length.")] = 10,
     trend_filter: Annotated[
-        int, typer.Option(help="Trend-filter SMA length (0 = off).")
+        int, typer.Option(help="[donchian] trend-filter SMA length (0 = off).")
     ] = 0,
+    period: Annotated[int, typer.Option(help="[meanrev] Bollinger lookback.")] = 20,
+    num_std: Annotated[float, typer.Option(help="[meanrev] band width in std devs.")] = 2.0,
+    stop_loss: Annotated[
+        float, typer.Option(help="Hard stop as a fraction, e.g. 0.02 = 2% (0 = off).")
+    ] = 0.0,
     fees: Annotated[float, typer.Option(help="Commission fraction per side.")] = 0.00003,
     slippage: Annotated[float, typer.Option(help="Slippage fraction per side.")] = 0.00002,
 ) -> None:
@@ -271,9 +276,7 @@ def backtest(
     from trading_bot.backtest.runner import run_backtest
     from trading_bot.data.candles import load_candles
     from trading_bot.strategies.donchian import DonchianParams, DonchianStrategy
-
-    if strategy != "donchian":
-        raise typer.Exit(f"Unknown strategy {strategy!r}. Available: donchian")
+    from trading_bot.strategies.mean_reversion import BollingerParams, MeanReversionStrategy
 
     df = load_candles(instrument, granularity)
     if df.empty:
@@ -282,28 +285,37 @@ def backtest(
             f"Run `tbot fetch {instrument} {granularity}` first."
         )
 
-    filter_period = trend_filter if trend_filter > 0 else None
+    if strategy == "donchian":
+        filter_period = trend_filter if trend_filter > 0 else None
+        strat: object = DonchianStrategy(
+            DonchianParams(
+                entry_period=entry_period,
+                exit_period=exit_period,
+                trend_filter_period=filter_period,
+            )
+        )
+        desc = f"entry={entry_period}/exit={exit_period}, trend_filter={filter_period or 'off'}"
+    elif strategy in ("meanrev", "mean_reversion"):
+        strat = MeanReversionStrategy(BollingerParams(period=period, num_std=num_std))
+        desc = f"period={period}, num_std={num_std}"
+    else:
+        raise typer.Exit(f"Unknown strategy {strategy!r}. Available: donchian, meanrev")
+
+    sl = stop_loss if stop_loss > 0 else None
     console.print(
         f"Backtesting [bold]{strategy}[/bold] on {instrument} {granularity}: "
         f"{len(df):,} bars, {df.index[0].date()} → {df.index[-1].date()}, "
-        f"entry={entry_period}/exit={exit_period}, "
-        f"trend_filter={filter_period or 'off'}, capital={capital:,.0f}"
+        f"{desc}, stop_loss={sl or 'off'}, capital={capital:,.0f}"
     )
 
-    strat = DonchianStrategy(
-        DonchianParams(
-            entry_period=entry_period,
-            exit_period=exit_period,
-            trend_filter_period=filter_period,
-        )
-    )
     result = run_backtest(
         df,
-        strat,
+        strat,  # type: ignore[arg-type]
         init_cash=capital,
         fees=fees,
         slippage=slippage,
         granularity=granularity,
+        stop_loss=sl,
     )
 
     # Pull the headline metrics from vectorbt's stats Series.
