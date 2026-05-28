@@ -18,9 +18,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from crochet import run_in_reactor
-from crochet import setup as crochet_setup
-from crochet import wait_for
+from crochet import (
+    TimeoutError as ReactorTimeout,
+)
+from crochet import (
+    run_in_reactor,
+    wait_for,
+)
+from crochet import (
+    setup as crochet_setup,
+)
 from ctrader_open_api import Client, Protobuf, TcpProtocol
 from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import ProtoErrorRes
 from ctrader_open_api.messages.OpenApiMessages_pb2 import (
@@ -28,7 +35,14 @@ from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOAApplicationAuthReq,
     ProtoOAErrorRes,
 )
+from tenacity import (
+    Retrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 from twisted.internet.defer import Deferred
+from twisted.internet.error import ConnectError, ConnectionClosed
 
 from trading_bot.observability.logging import get_logger
 
@@ -41,6 +55,16 @@ crochet_setup()
 
 DEFAULT_SEND_TIMEOUT = 30.0
 DEFAULT_CONNECT_TIMEOUT = 30.0
+
+# Retry policy for transient transport failures on send. A timed-out or dropped
+# connection is worth retrying; a logical API rejection (CTraderError) is not —
+# it's deterministic, so we let it propagate immediately. Re-sending is safe
+# because requests carry idempotency keys (orders use client_order_id, which
+# cTrader dedups), so a retried request can't double-act.
+DEFAULT_MAX_SEND_ATTEMPTS = 3
+DEFAULT_RETRY_BASE_DELAY = 0.5
+DEFAULT_RETRY_MAX_DELAY = 8.0
+TRANSIENT_SEND_ERRORS = (ReactorTimeout, ConnectError, ConnectionClosed, OSError)
 
 
 class CTraderError(RuntimeError):
@@ -108,6 +132,10 @@ class CTraderProtocol:
         client_secret: str,
         account_id: int,
         access_token: str,
+        *,
+        max_send_attempts: int = DEFAULT_MAX_SEND_ATTEMPTS,
+        retry_base_delay: float = DEFAULT_RETRY_BASE_DELAY,
+        retry_max_delay: float = DEFAULT_RETRY_MAX_DELAY,
     ) -> None:
         self._host = host
         self._port = port
@@ -115,12 +143,15 @@ class CTraderProtocol:
         self._client_secret = client_secret
         self._account_id = account_id
         self._access_token = access_token
+        self._max_send_attempts = max_send_attempts
+        self._retry_base_delay = retry_base_delay
+        self._retry_max_delay = retry_max_delay
         self._client: Client | None = None
         self._app_authed = False
         self._account_authed = False
 
     @classmethod
-    def from_settings(cls) -> "CTraderProtocol":
+    def from_settings(cls) -> CTraderProtocol:
         from trading_bot.config import get_settings
 
         s = get_settings()
@@ -142,17 +173,42 @@ class CTraderProtocol:
         return self._account_authed
 
     def _request(self, message: Any) -> Any:
-        """Send a message, wait for the response, extract the typed payload from
-        the ProtoMessage envelope, and raise on API errors.
+        """Send a message and return the typed response, retrying transient
+        transport failures (timeouts, dropped connections) up to the cap.
+
+        Logical API errors (CTraderError) are not retried — they propagate on
+        the first attempt. Each retry re-sends the same request, which is safe
+        because requests carry idempotency keys.
+        """
+        if self._client is None:
+            raise RuntimeError("Not connected")
+        retryer = Retrying(
+            retry=retry_if_exception_type(TRANSIENT_SEND_ERRORS),
+            stop=stop_after_attempt(self._max_send_attempts),
+            wait=wait_exponential(multiplier=self._retry_base_delay, max=self._retry_max_delay),
+            before_sleep=self._log_retry,
+            reraise=True,
+        )
+        return retryer(self._send_once, message)
+
+    def _send_once(self, message: Any) -> Any:
+        """One send attempt: wait for the response, extract the typed payload
+        from the ProtoMessage envelope, and raise on API errors.
 
         The SDK delivers responses as raw ProtoMessage envelopes
         (payloadType + serialised payload). Protobuf.extract turns that back
         into the concrete ProtoOA*Res message.
         """
-        if self._client is None:
-            raise RuntimeError("Not connected")
         envelope = _send_in_reactor(self._client, message)
         return _check_for_error(Protobuf.extract(envelope))
+
+    def _log_retry(self, retry_state: Any) -> None:
+        exc = retry_state.outcome.exception() if retry_state.outcome else None
+        log.warning(
+            "ctrader_send_retry",
+            attempt=retry_state.attempt_number,
+            error=str(exc),
+        )
 
     def _ensure_app_authed(self, timeout: float) -> None:
         """Open the TLS connection and authenticate the application. Idempotent."""
@@ -212,7 +268,7 @@ class CTraderProtocol:
             self._account_authed = False
             log.info("ctrader_closed")
 
-    def __enter__(self) -> "CTraderProtocol":
+    def __enter__(self) -> CTraderProtocol:
         self.connect()
         return self
 
