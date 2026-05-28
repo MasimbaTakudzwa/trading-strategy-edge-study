@@ -21,7 +21,7 @@ from typing import Any
 from crochet import run_in_reactor
 from crochet import setup as crochet_setup
 from crochet import wait_for
-from ctrader_open_api import Client, TcpProtocol
+from ctrader_open_api import Client, Protobuf, TcpProtocol
 from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import ProtoErrorRes
 from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOAAccountAuthReq,
@@ -141,6 +141,19 @@ class CTraderProtocol:
     def is_authenticated(self) -> bool:
         return self._account_authed
 
+    def _request(self, message: Any) -> Any:
+        """Send a message, wait for the response, extract the typed payload from
+        the ProtoMessage envelope, and raise on API errors.
+
+        The SDK delivers responses as raw ProtoMessage envelopes
+        (payloadType + serialised payload). Protobuf.extract turns that back
+        into the concrete ProtoOA*Res message.
+        """
+        if self._client is None:
+            raise RuntimeError("Not connected")
+        envelope = _send_in_reactor(self._client, message)
+        return _check_for_error(Protobuf.extract(envelope))
+
     def _ensure_app_authed(self, timeout: float) -> None:
         """Open the TLS connection and authenticate the application. Idempotent."""
         if self._client is None:
@@ -154,7 +167,7 @@ class CTraderProtocol:
             app_req = ProtoOAApplicationAuthReq()
             app_req.clientId = self._client_id
             app_req.clientSecret = self._client_secret
-            _check_for_error(_send_in_reactor(self._client, app_req))
+            self._request(app_req)
             self._app_authed = True
             log.info("ctrader_app_authenticated")
 
@@ -176,20 +189,20 @@ class CTraderProtocol:
         acc_req = ProtoOAAccountAuthReq()
         acc_req.ctidTraderAccountId = self._account_id
         acc_req.accessToken = self._access_token
-        _check_for_error(_send_in_reactor(self._client, acc_req))
+        self._request(acc_req)
         log.info("ctrader_account_authenticated", account_id=self._account_id)
 
         self._account_authed = True
 
     def send(self, message: Any) -> Any:
-        """Send a request and return the (unwrapped) response. Raises on error.
+        """Send a request and return the extracted, typed response. Raises on error.
 
         Requires at least app auth (connect_app_only or connect). Account-scoped
         requests will still fail server-side if the account isn't authenticated.
         """
         if self._client is None or not self._app_authed:
             raise RuntimeError("Call connect() or connect_app_only() before send()")
-        return _check_for_error(_send_in_reactor(self._client, message))
+        return self._request(message)
 
     def close(self) -> None:
         if self._client is not None:
