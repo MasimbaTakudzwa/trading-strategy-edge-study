@@ -148,6 +148,13 @@ class CTraderBroker:
         event = self._protocol.send(req)
         return self._parse_execution(event, request)
 
+    def symbol_spec(self, instrument: str):  # type: ignore[no-untyped-def]
+        """Public accessor for an instrument's broker spec (units/min/step/digits).
+
+        The OMS and paper engine need this to size and round orders.
+        """
+        return self._spec(instrument)
+
     def _spec(self, instrument: str):  # type: ignore[no-untyped-def]
         from trading_bot.execution.instruments import fetch_symbol_spec
 

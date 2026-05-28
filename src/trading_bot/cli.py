@@ -18,7 +18,7 @@ Subcommands match the lifecycle phases:
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
@@ -126,7 +126,7 @@ def ctrader_login(
     )
     try:
         result = run_login(timeout=float(timeout))
-    except Exception as e:  # noqa: BLE001 — surface any failure cleanly to the user
+    except Exception as e:  # surface any failure cleanly to the user
         console.print(f"[red]Login failed:[/red] {e}")
         raise typer.Exit(code=1) from e
 
@@ -158,8 +158,9 @@ def ctrader_login(
 
 @ctrader_app.command("symbols")
 def ctrader_symbols(
-    filter: Annotated[
-        str, typer.Option(help="Substring filter on symbol name (case-insensitive).")
+    pattern: Annotated[
+        str,
+        typer.Option("--filter", help="Substring filter on symbol name (case-insensitive)."),
     ] = "",
 ) -> None:
     """List instruments available on the connected cTrader account.
@@ -172,11 +173,13 @@ def ctrader_symbols(
     from trading_bot.data.ctrader_fetcher import CTraderFetcher
     from trading_bot.data.ctrader_protocol import CTraderProtocol
 
-    needle = filter.lower()
-    with console.status("Connecting to cTrader and loading symbols..."):
-        with CTraderProtocol.from_settings() as protocol:
-            fetcher = CTraderFetcher(protocol)
-            symbols = fetcher.list_symbols()
+    needle = pattern.lower()
+    with (
+        console.status("Connecting to cTrader and loading symbols..."),
+        CTraderProtocol.from_settings() as protocol,
+    ):
+        fetcher = CTraderFetcher(protocol)
+        symbols = fetcher.list_symbols()
 
     rows = sorted(
         (name, sid) for name, sid in symbols.items() if needle in name.lower()
@@ -239,16 +242,59 @@ def fetch(
     else:
         start = datetime.fromisoformat(since).replace(tzinfo=timezone.utc)
 
-    with console.status(f"Fetching {instrument} {granularity} from {start.isoformat()}..."):
-        with CTraderProtocol.from_settings() as protocol:
-            fetcher = CTraderFetcher(protocol)
-            n = fetcher.backfill(instrument, granularity, start)
+    with (
+        console.status(f"Fetching {instrument} {granularity} from {start.isoformat()}..."),
+        CTraderProtocol.from_settings() as protocol,
+    ):
+        fetcher = CTraderFetcher(protocol)
+        n = fetcher.backfill(instrument, granularity, start)
     console.print(f"Upserted [bold]{n:,}[/bold] candles for {instrument} {granularity}")
 
 
 # ---------------------------------------------------------------------------
 # backtest / paper / live
 # ---------------------------------------------------------------------------
+
+
+def _build_strategy(
+    strategy: str,
+    *,
+    entry_period: int = 20,
+    exit_period: int = 10,
+    trend_filter: int = 0,
+    period: int = 20,
+    num_std: float = 2.0,
+) -> tuple[Any, str, dict[str, Any]]:
+    """Construct a strategy from CLI params — shared by `backtest` and `paper`.
+
+    Returns (strategy, human-readable description, params dict for persistence).
+    Raises typer.Exit on an unknown strategy name.
+    """
+    from trading_bot.strategies.donchian import DonchianParams, DonchianStrategy
+    from trading_bot.strategies.mean_reversion import BollingerParams, MeanReversionStrategy
+
+    if strategy == "donchian":
+        filter_period = trend_filter if trend_filter > 0 else None
+        strat: Any = DonchianStrategy(
+            DonchianParams(
+                entry_period=entry_period,
+                exit_period=exit_period,
+                trend_filter_period=filter_period,
+            )
+        )
+        desc = f"entry={entry_period}/exit={exit_period}, trend_filter={filter_period or 'off'}"
+        params = {
+            "entry_period": entry_period,
+            "exit_period": exit_period,
+            "trend_filter_period": filter_period,
+        }
+    elif strategy in ("meanrev", "mean_reversion"):
+        strat = MeanReversionStrategy(BollingerParams(period=period, num_std=num_std))
+        desc = f"period={period}, num_std={num_std}"
+        params = {"period": period, "num_std": num_std}
+    else:
+        raise typer.Exit(f"Unknown strategy {strategy!r}. Available: donchian, meanrev")
+    return strat, desc, params
 
 
 @app.command()
@@ -275,8 +321,6 @@ def backtest(
 
     from trading_bot.backtest.runner import run_backtest
     from trading_bot.data.candles import load_candles
-    from trading_bot.strategies.donchian import DonchianParams, DonchianStrategy
-    from trading_bot.strategies.mean_reversion import BollingerParams, MeanReversionStrategy
 
     df = load_candles(instrument, granularity)
     if df.empty:
@@ -285,21 +329,14 @@ def backtest(
             f"Run `tbot fetch {instrument} {granularity}` first."
         )
 
-    if strategy == "donchian":
-        filter_period = trend_filter if trend_filter > 0 else None
-        strat: object = DonchianStrategy(
-            DonchianParams(
-                entry_period=entry_period,
-                exit_period=exit_period,
-                trend_filter_period=filter_period,
-            )
-        )
-        desc = f"entry={entry_period}/exit={exit_period}, trend_filter={filter_period or 'off'}"
-    elif strategy in ("meanrev", "mean_reversion"):
-        strat = MeanReversionStrategy(BollingerParams(period=period, num_std=num_std))
-        desc = f"period={period}, num_std={num_std}"
-    else:
-        raise typer.Exit(f"Unknown strategy {strategy!r}. Available: donchian, meanrev")
+    strat, desc, _ = _build_strategy(
+        strategy,
+        entry_period=entry_period,
+        exit_period=exit_period,
+        trend_filter=trend_filter,
+        period=period,
+        num_std=num_std,
+    )
 
     sl = stop_loss if stop_loss > 0 else None
     console.print(
@@ -350,19 +387,151 @@ def backtest(
 
 @app.command()
 def paper(
-    strategy: Annotated[str, typer.Option("--strategy", "-s")],
+    strategy: Annotated[str, typer.Option("--strategy", "-s", help="donchian | meanrev")],
     instrument: Annotated[str, typer.Option("--instrument", "-i")] = "EURUSD",
+    granularity: Annotated[str, typer.Option("--granularity", "-g")] = "H1",
+    entry_period: Annotated[int, typer.Option(help="[donchian] entry channel length.")] = 20,
+    exit_period: Annotated[int, typer.Option(help="[donchian] exit channel length.")] = 10,
+    trend_filter: Annotated[
+        int, typer.Option(help="[donchian] trend-filter SMA length (0 = off).")
+    ] = 0,
+    period: Annotated[int, typer.Option(help="[meanrev] Bollinger lookback.")] = 20,
+    num_std: Annotated[float, typer.Option(help="[meanrev] band width in std devs.")] = 2.0,
+    value_per_point: Annotated[
+        float,
+        typer.Option(help="Money per 1.0 price move per unit (1.0 fits FX base units & most CFDs)."),
+    ] = 1.0,
+    history_bars: Annotated[
+        int, typer.Option(help="Recent bars fed to the strategy each tick.")
+    ] = 400,
+    loop: Annotated[
+        bool, typer.Option("--loop", help="Keep polling each interval until Ctrl-C.")
+    ] = False,
+    poll_seconds: Annotated[float, typer.Option(help="Loop poll interval in seconds.")] = 60.0,
+    no_fetch: Annotated[
+        bool, typer.Option("--no-fetch", help="Use only stored candles; don't pull fresh bars.")
+    ] = False,
 ) -> None:
-    """Run on cTrader demo account. Logs everything to DB tagged env='practice'."""
+    """Run a strategy on the cTrader demo account.
+
+    Each tick pulls the latest bars, evaluates the strategy on the most recent
+    closed bar, and routes any decision through the OMS onto the demo account.
+    Everything is logged to the DB tagged env='practice'. Hard-requires
+    CTRADER_ENV=demo — this command refuses to touch a live account.
+    """
+    from trading_bot.data.candles import latest_candle_ts, load_candles
+    from trading_bot.data.ctrader_fetcher import GRANULARITY_MAP, CTraderFetcher
+    from trading_bot.data.ctrader_protocol import CTraderProtocol
+    from trading_bot.execution.ctrader_broker import CTraderBroker
+    from trading_bot.oms.engine import OMS
+    from trading_bot.oms.paper import Action, PaperEngine, TickResult
+    from trading_bot.oms.store import DbRunStore
+    from trading_bot.risk.limits import RiskGate
+
     s = get_settings()
     if s.ctrader_env != CTraderEnv.DEMO:
         raise typer.Exit(
             f"CTRADER_ENV is {s.ctrader_env.value!r} — paper trading requires 'demo'."
         )
-    console.print(
-        f"[green]paper trading stub[/green]: {strategy} on {instrument} (env=demo)"
+    if granularity not in GRANULARITY_MAP:
+        raise typer.Exit(
+            f"Unknown granularity {granularity!r}. Valid: {', '.join(sorted(GRANULARITY_MAP))}"
+        )
+
+    strat, desc, params = _build_strategy(
+        strategy,
+        entry_period=entry_period,
+        exit_period=exit_period,
+        trend_filter=trend_filter,
+        period=period,
+        num_std=num_std,
     )
-    log.info("paper_requested", strategy=strategy, instrument=instrument)
+
+    def _print(result: TickResult) -> None:
+        if result.action == Action.OPEN:
+            res = result.oms_result
+            if res is not None and res.placed and res.order_request is not None:
+                req = res.order_request
+                console.print(
+                    f"[green]OPEN[/green] {result.side.value if result.side else '?'} "
+                    f"{req.units:g} {instrument} stop={req.stop_loss_price} "
+                    f"(equity {result.equity:,.2f})"
+                )
+            else:
+                console.print(f"[yellow]OPEN refused[/yellow]: {result.reason}")
+        elif result.action == Action.CLOSE:
+            console.print(f"[cyan]CLOSE[/cyan] {instrument}: {result.closed} position(s)")
+        elif result.action == Action.HOLD:
+            console.print(
+                f"[dim]hold[/dim] {instrument} units={result.open_units:g} "
+                f"equity={result.equity:,.2f}"
+            )
+        else:  # SKIP
+            console.print(f"[yellow]skip[/yellow]: {result.reason}")
+
+    store = DbRunStore()
+    with CTraderProtocol.from_settings() as protocol:
+        broker = CTraderBroker(protocol)
+        fetcher = CTraderFetcher(protocol)
+        spec = broker.symbol_spec(instrument)
+        account = broker.get_account()
+
+        run_id = store.start_run(
+            env="practice",
+            strategy=strat.name,
+            params={**params, "instrument": instrument, "granularity": granularity},
+            starting_balance=account.balance,
+            notes=f"paper {strategy}: {desc}",
+        )
+        # OMS run_id is the *idempotency namespace* for client_order_id — a stable
+        # string (not the per-invocation run UUID) so a restart re-processing the
+        # same bar mints the same id and can't double-submit.
+        oms = OMS(
+            broker,
+            RiskGate(),
+            run_id=f"practice:{strat.name}:{instrument}",
+            value_per_point=value_per_point,
+        )
+        engine = PaperEngine(
+            broker=broker,
+            oms=oms,
+            strategy=strat,
+            instrument=instrument,
+            spec=spec,
+            store=store,
+            run_id=run_id,
+            env="practice",
+        )
+
+        _, minutes = GRANULARITY_MAP[granularity]
+
+        def _load():  # type: ignore[no-untyped-def]
+            if not no_fetch:
+                latest = latest_candle_ts(instrument, granularity)
+                if latest is not None:
+                    start = latest + timedelta(minutes=minutes)
+                else:
+                    start = datetime.now(timezone.utc) - timedelta(
+                        minutes=minutes * history_bars * 2
+                    )
+                fetcher.backfill(instrument, granularity, start)
+            return load_candles(instrument, granularity).tail(history_bars)
+
+        console.print(
+            f"[green]paper[/green] {strategy} on {instrument} {granularity} "
+            f"(env=demo, balance {account.balance:,.2f}, run {run_id[:8]})"
+        )
+        try:
+            if loop:
+                console.print(f"Polling every {poll_seconds:g}s — Ctrl-C to stop.")
+                ticks = engine.run_loop(_load, poll_seconds=poll_seconds, on_tick=_print)
+                console.print(f"Stopped after {ticks} tick(s).")
+            else:
+                _print(engine.run_tick(_load()))
+        finally:
+            store.end_run(run_id)
+
+    log.info("paper_run_complete", strategy=strategy, instrument=instrument, run_id=run_id)
 
 
 @app.command()
