@@ -259,6 +259,9 @@ def backtest(
     capital: Annotated[float, typer.Option(help="Starting cash.")] = 1000.0,
     entry_period: Annotated[int, typer.Option(help="Donchian entry channel length.")] = 20,
     exit_period: Annotated[int, typer.Option(help="Donchian exit channel length.")] = 10,
+    trend_filter: Annotated[
+        int, typer.Option(help="Trend-filter SMA length (0 = off).")
+    ] = 0,
     fees: Annotated[float, typer.Option(help="Commission fraction per side.")] = 0.00003,
     slippage: Annotated[float, typer.Option(help="Slippage fraction per side.")] = 0.00002,
 ) -> None:
@@ -279,13 +282,21 @@ def backtest(
             f"Run `tbot fetch {instrument} {granularity}` first."
         )
 
+    filter_period = trend_filter if trend_filter > 0 else None
     console.print(
         f"Backtesting [bold]{strategy}[/bold] on {instrument} {granularity}: "
         f"{len(df):,} bars, {df.index[0].date()} → {df.index[-1].date()}, "
-        f"entry={entry_period}/exit={exit_period}, capital={capital:,.0f}"
+        f"entry={entry_period}/exit={exit_period}, "
+        f"trend_filter={filter_period or 'off'}, capital={capital:,.0f}"
     )
 
-    strat = DonchianStrategy(DonchianParams(entry_period=entry_period, exit_period=exit_period))
+    strat = DonchianStrategy(
+        DonchianParams(
+            entry_period=entry_period,
+            exit_period=exit_period,
+            trend_filter_period=filter_period,
+        )
+    )
     result = run_backtest(
         df,
         strat,

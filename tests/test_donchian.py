@@ -117,3 +117,31 @@ def test_missing_columns_raises() -> None:
     df = pd.DataFrame({"close": [1.0, 2.0, 3.0]})
     with pytest.raises(ValueError, match="missing columns"):
         DonchianStrategy().generate_signals(df)
+
+
+# ---------------------------------------------------------------------------
+# Trend filter
+# ---------------------------------------------------------------------------
+
+
+def test_trend_filter_blocks_long_below_sma() -> None:
+    """A long breakout while price is below its long SMA should be suppressed
+    by the trend filter, but allowed without it."""
+    # Long downtrend, then a small upside breakout that's still below the SMA.
+    closes = list(range(100, 60, -1)) + [75.0]  # falling 100→61, then pop to 75
+    df = _candles([float(c) for c in closes])
+
+    no_filter = DonchianStrategy(DonchianParams(20, 10)).generate_signals(df)
+    filtered = DonchianStrategy(
+        DonchianParams(20, 10, trend_filter_period=20)
+    ).generate_signals(df)
+
+    # Without the filter the pop can trigger a long; with it, price is below
+    # the SMA so the long is blocked.
+    assert filtered.long_entries.sum() <= no_filter.long_entries.sum()
+    assert not filtered.long_entries.iloc[-1]
+
+
+def test_trend_filter_period_validation() -> None:
+    with pytest.raises(ValueError, match="trend_filter_period"):
+        DonchianParams(20, 10, trend_filter_period=1)

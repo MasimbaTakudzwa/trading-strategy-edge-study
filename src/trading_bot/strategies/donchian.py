@@ -28,6 +28,11 @@ import pandas as pd
 class DonchianParams:
     entry_period: int = 20
     exit_period: int = 10
+    # Optional long-term trend filter: only take longs when close is above its
+    # `trend_filter_period`-bar simple moving average, shorts when below. None
+    # disables it (raw breakout). This is the single biggest stability lever —
+    # it keeps the system out of chop by only trading with the prevailing trend.
+    trend_filter_period: int | None = None
 
     def __post_init__(self) -> None:
         if self.entry_period < 2:
@@ -37,6 +42,8 @@ class DonchianParams:
         if self.exit_period >= self.entry_period:
             # Not strictly illegal, but a tighter exit than entry is the point.
             raise ValueError("exit_period should be smaller than entry_period")
+        if self.trend_filter_period is not None and self.trend_filter_period < 2:
+            raise ValueError("trend_filter_period must be >= 2 or None")
 
 
 @dataclass(frozen=True)
@@ -79,6 +86,14 @@ class DonchianStrategy:
         short_entries = close < entry_lower
         long_exits = close < exit_lower
         short_exits = close > exit_upper
+
+        # Optional trend filter: gate entries by the side of the long SMA.
+        # The SMA at bar t uses data through bar t's close (known at decision
+        # time), so no look-ahead is introduced.
+        if self.params.trend_filter_period is not None:
+            sma = close.rolling(self.params.trend_filter_period).mean()
+            long_entries = long_entries & (close > sma)
+            short_entries = short_entries & (close < sma)
 
         # Warm-up bars (before the channels are defined) produce NaN → no signal.
         return SignalSet(
