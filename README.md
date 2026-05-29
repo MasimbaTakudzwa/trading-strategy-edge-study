@@ -1,4 +1,4 @@
-# trading-bot
+# Trading-Strategy Edge Study
 
 A from-scratch, rules-based algorithmic trading bot (cTrader Open API + FP Markets), built as an engineering **and research** project.
 

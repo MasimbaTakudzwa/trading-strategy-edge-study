@@ -2,7 +2,7 @@
 
 **Author:** Masimba
 **Date:** 29 May 2026
-**Repository:** `github.com/MasimbaTakudzwa/trading-bot`
+**Repository:** `github.com/MasimbaTakudzwa/trading-strategy-edge-study`
 **Stack:** Python 3.12 · cTrader Open API (FP Markets) · TimescaleDB · vectorbt
 
 ---
