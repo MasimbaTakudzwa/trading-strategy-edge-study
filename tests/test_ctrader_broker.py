@@ -27,7 +27,7 @@ from ctrader_open_api.messages.OpenApiModelMessages_pb2 import (
 
 from trading_bot.execution.base import OrderRequest, OrderType, Side
 
-ACCOUNT = 47411770
+ACCOUNT = 1234567  # placeholder demo id; the real value lives only in .env
 SYMBOLS = {"EURUSD": 1, "XAUUSD": 41}
 
 

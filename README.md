@@ -1,6 +1,10 @@
 # trading-bot
 
-FX trading bot. Technical rules-based strategies. cTrader Open API + FP Markets.
+A from-scratch, rules-based algorithmic trading bot (cTrader Open API + FP Markets), built as an engineering **and research** project.
+
+> **Disclaimer — please read first.** This project is for **education and research only** and is **not financial or investment advice**. Trading and holding leveraged instruments (FX, commodities, CFDs) carries substantial risk — **you can lose some or all of your capital.** Backtested and past performance does **not** guarantee future results. The author accepts **no responsibility or liability for any financial loss** arising from use of this software. Use entirely at your own risk. See **[DISCLAIMER.md](DISCLAIMER.md)** and **[LICENSE](LICENSE)**.
+
+**Research finding:** across six backtests (two instruments, two strategies, timeframes, and horizons up to 22 years), the simple technical strategies tested showed **no durable, tradeable edge** — passive buy-and-hold matched or beat them in every clean comparison. Full write-up: **[`docs/thesis/thesis.md`](docs/thesis/thesis.md)** (LaTeX source: `docs/thesis/thesis.tex`).
 
 ## What this is
 
@@ -137,10 +141,19 @@ Strategy → emits Intent → Risk gate validates + sizes → OMS makes OrderReq
 
 ## Status
 
-- ✅ Week 1: data fetcher + candle storage (cTrader Open API)
-- [ ] Week 2: Donchian breakout backtest
-- [ ] Week 3: risk module + reconciliation
-- [ ] Week 4: cTrader execution adapter + OMS
-- [ ] Week 5: end-to-end paper trading
-- [ ] Week 6-9: paper trading and bug fixes
-- [ ] Week 10: live with €500
+The build is complete and the research question has been answered.
+
+- ✅ Data fetcher + candle storage (cTrader Open API)
+- ✅ Donchian breakout + Bollinger mean-reversion strategies
+- ✅ vectorbt backtest harness with a realistic cost model
+- ✅ Risk module (ATR sizing, limits, kill switch) + reconciliation
+- ✅ cTrader execution adapter + idempotent OMS
+- ✅ End-to-end paper-trading engine (demo) + observability (`status` / `reconcile` / `report`)
+- ✅ 114 passing tests
+- ✅ Empirical evaluation + dissertation write-up — see [`docs/thesis/`](docs/thesis/)
+
+Live trading remains intentionally disabled (`ALLOW_LIVE_TRADING=false`): the research found no edge that would justify risking real capital.
+
+## License
+
+Released under the [MIT License](LICENSE) — free to use, modify, and distribute, provided the copyright notice is retained and **with no warranty of any kind**. The trading-risk disclaimer in [DISCLAIMER.md](DISCLAIMER.md) applies to all use of this software.
