@@ -42,6 +42,7 @@ from tenacity import (
     wait_exponential,
 )
 from twisted.internet.defer import Deferred
+from twisted.internet.defer import TimeoutError as DeferredTimeout
 from twisted.internet.error import ConnectError, ConnectionClosed
 
 from trading_bot.observability.logging import get_logger
@@ -61,10 +62,22 @@ DEFAULT_CONNECT_TIMEOUT = 30.0
 # it's deterministic, so we let it propagate immediately. Re-sending is safe
 # because requests carry idempotency keys (orders use client_order_id, which
 # cTrader dedups), so a retried request can't double-act.
+#
+# DeferredTimeout is the one that actually fires in practice: the SDK puts a
+# short per-request timeout on its response Deferred, and a slow tick surfaces
+# as twisted.internet.defer.TimeoutError — which is NOT an OSError or a crochet
+# TimeoutError, so it must be listed explicitly (an overnight run crashed on
+# exactly this before it was added).
 DEFAULT_MAX_SEND_ATTEMPTS = 3
 DEFAULT_RETRY_BASE_DELAY = 0.5
 DEFAULT_RETRY_MAX_DELAY = 8.0
-TRANSIENT_SEND_ERRORS = (ReactorTimeout, ConnectError, ConnectionClosed, OSError)
+TRANSIENT_SEND_ERRORS = (
+    DeferredTimeout,
+    ReactorTimeout,
+    ConnectError,
+    ConnectionClosed,
+    OSError,
+)
 
 
 class CTraderError(RuntimeError):

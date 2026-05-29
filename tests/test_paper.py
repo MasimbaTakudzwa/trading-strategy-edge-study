@@ -322,3 +322,32 @@ def test_run_loop_runs_max_ticks_without_sleeping() -> None:
 
     assert ticks == 3
     assert seen == [Action.HOLD, Action.HOLD, Action.HOLD]
+
+
+class _BoomStrategy:
+    """Raises on every signal computation — stands in for a tick that blows up
+    (in production it was a deferred timeout escaping the protocol retry)."""
+
+    name = "boom"
+
+    def generate_signals(self, candles: pd.DataFrame) -> SignalSet:
+        raise RuntimeError("boom")
+
+
+def test_run_loop_survives_a_failing_tick() -> None:
+    broker = FakeBroker()
+    store = FakeStore()
+    candles = _candles()
+    engine = _engine(broker, _BoomStrategy(), store)
+
+    seen: list[Action] = []
+    ticks = engine.run_loop(
+        lambda: candles,
+        poll_seconds=0.0,
+        max_ticks=3,
+        sleep=lambda _s: None,
+        on_tick=lambda r: seen.append(r.action),
+    )
+
+    assert ticks == 3  # looped all three times despite every tick raising
+    assert seen == []  # on_tick never fired — each run_tick failed and was skipped

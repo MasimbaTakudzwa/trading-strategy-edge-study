@@ -310,9 +310,20 @@ class PaperEngine:
         ticks = 0
         try:
             while max_ticks is None or ticks < max_ticks:
-                result = self.run_tick(load_candles())
-                if on_tick is not None:
-                    on_tick(result)
+                # One bad tick (a transient fetch/send error that slips past the
+                # protocol's own retry, a parse hiccup, etc.) must never tear
+                # down an unattended run — log it and carry on to the next poll.
+                try:
+                    result = self.run_tick(load_candles())
+                    if on_tick is not None:
+                        on_tick(result)
+                except Exception as exc:  # resilience: never let one tick kill the loop
+                    log.warning(
+                        "paper_tick_failed",
+                        instrument=self._instrument,
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
                 ticks += 1
                 if max_ticks is not None and ticks >= max_ticks:
                     break

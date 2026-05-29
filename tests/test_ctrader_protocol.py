@@ -12,6 +12,7 @@ import types
 from typing import Any
 
 import pytest
+from twisted.internet.defer import TimeoutError as DeferredTimeout
 
 from trading_bot.data import ctrader_protocol as cp
 from trading_bot.data.ctrader_protocol import CTraderError, CTraderProtocol, ReactorTimeout
@@ -54,6 +55,27 @@ def test_transient_error_is_retried_then_succeeds(monkeypatch: pytest.MonkeyPatc
 
     assert result == "ENVELOPE"
     assert calls["n"] == 3  # failed twice, succeeded on the third attempt
+
+
+def test_deferred_timeout_is_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    # twisted.internet.defer.TimeoutError (the SDK's per-request response timeout)
+    # is the class that crashed an unattended overnight run before it was added
+    # to the transient list. This is the regression guard.
+    calls = {"n": 0}
+
+    def fake_send(client: Any, message: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise DeferredTimeout(5, "Deferred")
+        return "ENVELOPE"
+
+    monkeypatch.setattr(cp, "_send_in_reactor", fake_send)
+    monkeypatch.setattr(cp, "Protobuf", _identity_protobuf())
+
+    result = _protocol()._request("REQ")
+
+    assert result == "ENVELOPE"
+    assert calls["n"] == 3  # retried through the deferred timeouts instead of crashing
 
 
 def test_transient_error_exhausts_attempts_and_reraises(
